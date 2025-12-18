@@ -1,0 +1,11 @@
+# Build Artifacts
+flash_attn
+flash_attention
+*.o
+*.dSYM/
+
+# Benchmarks and Plots (remove if you want to track them)
+benchmark_results.csv
+
+# System
+.DS_Store

@@ -1,0 +1,102 @@
+<svg width="800" height="600" xmlns="http://www.w3.org/2000/svg">
+<rect width="100%" height="100%" fill="white" />
+<line x1="60" y1="540" x2="740" y2="540" stroke="black" stroke-width="2"/>
+<line x1="60" y1="540" x2="60" y2="60" stroke="black" stroke-width="2"/>
+<line x1="60" y1="540.0" x2="740" y2="540.0" stroke="lightgray" stroke-dasharray="5,5"/>
+<text x="50" y="545.0" text-anchor="end" font-family="Arial" font-size="12">0</text>
+<line x1="60" y1="493.02927298016095" x2="740" y2="493.02927298016095" stroke="lightgray" stroke-dasharray="5,5"/>
+<text x="50" y="498.02927298016095" text-anchor="end" font-family="Arial" font-size="12">1</text>
+<line x1="60" y1="446.05854596032196" x2="740" y2="446.05854596032196" stroke="lightgray" stroke-dasharray="5,5"/>
+<text x="50" y="451.05854596032196" text-anchor="end" font-family="Arial" font-size="12">2</text>
+<line x1="60" y1="399.087818940483" x2="740" y2="399.087818940483" stroke="lightgray" stroke-dasharray="5,5"/>
+<text x="50" y="404.087818940483" text-anchor="end" font-family="Arial" font-size="12">3</text>
+<line x1="60" y1="352.11709192064393" x2="740" y2="352.11709192064393" stroke="lightgray" stroke-dasharray="5,5"/>
+<text x="50" y="357.11709192064393" text-anchor="end" font-family="Arial" font-size="12">4</text>
+<line x1="60" y1="305.1463649008049" x2="740" y2="305.1463649008049" stroke="lightgray" stroke-dasharray="5,5"/>
+<text x="50" y="310.1463649008049" text-anchor="end" font-family="Arial" font-size="12">5</text>
+<line x1="60" y1="258.1756378809659" x2="740" y2="258.1756378809659" stroke="lightgray" stroke-dasharray="5,5"/>
+<text x="50" y="263.1756378809659" text-anchor="end" font-family="Arial" font-size="12">6</text>
+<line x1="60" y1="211.2049108611269" x2="740" y2="211.2049108611269" stroke="lightgray" stroke-dasharray="5,5"/>
+<text x="50" y="216.2049108611269" text-anchor="end" font-family="Arial" font-size="12">7</text>
+<line x1="60" y1="164.23418384128786" x2="740" y2="164.23418384128786" stroke="lightgray" stroke-dasharray="5,5"/>
+<text x="50" y="169.23418384128786" text-anchor="end" font-family="Arial" font-size="12">8</text>
+<line x1="60" y1="117.26345682144881" x2="740" y2="117.26345682144881" stroke="lightgray" stroke-dasharray="5,5"/>
+<text x="50" y="122.26345682144881" text-anchor="end" font-family="Arial" font-size="12">9</text>
+<line x1="60" y1="70.29272980160982" x2="740" y2="70.29272980160982" stroke="lightgray" stroke-dasharray="5,5"/>
+<text x="50" y="75.29272980160982" text-anchor="end" font-family="Arial" font-size="12">10</text>
+<line x1="60.0" y1="540" x2="60.0" y2="60" stroke="lightgray" stroke-dasharray="5,5"/>
+<text x="60.0" y="560" text-anchor="middle" font-family="Arial" font-size="12">128</text>
+<line x1="173.33333333333331" y1="540" x2="173.33333333333331" y2="60" stroke="lightgray" stroke-dasharray="5,5"/>
+<text x="173.33333333333331" y="560" text-anchor="middle" font-family="Arial" font-size="12">256</text>
+<line x1="286.66666666666663" y1="540" x2="286.66666666666663" y2="60" stroke="lightgray" stroke-dasharray="5,5"/>
+<text x="286.66666666666663" y="560" text-anchor="middle" font-family="Arial" font-size="12">512</text>
+<line x1="400.0" y1="540" x2="400.0" y2="60" stroke="lightgray" stroke-dasharray="5,5"/>
+<text x="400.0" y="560" text-anchor="middle" font-family="Arial" font-size="12">1024</text>
+<line x1="513.3333333333333" y1="540" x2="513.3333333333333" y2="60" stroke="lightgray" stroke-dasharray="5,5"/>
+<text x="513.3333333333333" y="560" text-anchor="middle" font-family="Arial" font-size="12">2048</text>
+<line x1="626.6666666666667" y1="540" x2="626.6666666666667" y2="60" stroke="lightgray" stroke-dasharray="5,5"/>
+<text x="626.6666666666667" y="560" text-anchor="middle" font-family="Arial" font-size="12">4096</text>
+<line x1="740.0" y1="540" x2="740.0" y2="60" stroke="lightgray" stroke-dasharray="5,5"/>
+<text x="740.0" y="560" text-anchor="middle" font-family="Arial" font-size="12">8192</text>
+<text x="400.0" y="30.0" text-anchor="middle" font-family="Arial" font-size="20" font-weight="bold">FlashAttention Speedup (vs Naive)</text>
+<rect x="650" y="60" width="10" height="10" fill="blue" /><text x="665" y="70" font-family="Arial" font-size="12">Flash V1</text><rect x="650" y="80" width="10" height="10" fill="green" /><text x="665" y="90" font-family="Arial" font-size="12">Flash V2 (Float4)</text><rect x="650" y="100" width="10" height="10" fill="red" /><text x="665" y="110" font-family="Arial" font-size="12">Flash V3 (Mat FP32)</text><rect x="650" y="120" width="10" height="10" fill="purple" /><text x="665" y="130" font-family="Arial" font-size="12">Flash V4 (Mat FP16)</text><polyline points="60.0,451.85008647905784 173.33333333333331,461.84551104185186 286.66666666666663,463.94374370042004 400.0,504.2893644064315 513.3333333333333,515.9350886662506 626.6666666666667,514.5178761721652 740.0,515.4938047201377" fill="none" stroke="blue" stroke-width="3"/>
+<circle cx="60.0" cy="451.85008647905784" r="4" fill="blue" />
+<text x="60.0" y="441.85008647905784" text-anchor="middle" font-family="Arial" font-size="10" fill="blue">1.9x</text>
+<circle cx="173.33333333333331" cy="461.84551104185186" r="4" fill="blue" />
+<text x="173.33333333333331" y="451.84551104185186" text-anchor="middle" font-family="Arial" font-size="10" fill="blue">1.7x</text>
+<circle cx="286.66666666666663" cy="463.94374370042004" r="4" fill="blue" />
+<text x="286.66666666666663" y="453.94374370042004" text-anchor="middle" font-family="Arial" font-size="10" fill="blue">1.6x</text>
+<circle cx="400.0" cy="504.2893644064315" r="4" fill="blue" />
+<text x="400.0" y="494.2893644064315" text-anchor="middle" font-family="Arial" font-size="10" fill="blue">0.8x</text>
+<circle cx="513.3333333333333" cy="515.9350886662506" r="4" fill="blue" />
+<text x="513.3333333333333" y="505.93508866625064" text-anchor="middle" font-family="Arial" font-size="10" fill="blue">0.5x</text>
+<circle cx="626.6666666666667" cy="514.5178761721652" r="4" fill="blue" />
+<text x="626.6666666666667" y="504.5178761721652" text-anchor="middle" font-family="Arial" font-size="10" fill="blue">0.5x</text>
+<circle cx="740.0" cy="515.4938047201377" r="4" fill="blue" />
+<text x="740.0" y="505.49380472013775" text-anchor="middle" font-family="Arial" font-size="10" fill="blue">0.5x</text>
+<polyline points="60.0,171.12166739995916 173.33333333333331,168.04374059644624 286.66666666666663,103.63636363636363 400.0,262.55162725164297 513.3333333333333,342.1340569671221 626.6666666666667,418.7441237676822 740.0,382.747935331748" fill="none" stroke="green" stroke-width="3"/>
+<circle cx="60.0" cy="171.12166739995916" r="4" fill="green" />
+<text x="60.0" y="161.12166739995916" text-anchor="middle" font-family="Arial" font-size="10" fill="green">7.9x</text>
+<circle cx="173.33333333333331" cy="168.04374059644624" r="4" fill="green" />
+<text x="173.33333333333331" y="158.04374059644624" text-anchor="middle" font-family="Arial" font-size="10" fill="green">7.9x</text>
+<circle cx="286.66666666666663" cy="103.63636363636363" r="4" fill="green" />
+<text x="286.66666666666663" y="93.63636363636363" text-anchor="middle" font-family="Arial" font-size="10" fill="green">9.3x</text>
+<circle cx="400.0" cy="262.55162725164297" r="4" fill="green" />
+<text x="400.0" y="252.55162725164297" text-anchor="middle" font-family="Arial" font-size="10" fill="green">5.9x</text>
+<circle cx="513.3333333333333" cy="342.1340569671221" r="4" fill="green" />
+<text x="513.3333333333333" y="332.1340569671221" text-anchor="middle" font-family="Arial" font-size="10" fill="green">4.2x</text>
+<circle cx="626.6666666666667" cy="418.7441237676822" r="4" fill="green" />
+<text x="626.6666666666667" y="408.7441237676822" text-anchor="middle" font-family="Arial" font-size="10" fill="green">2.6x</text>
+<circle cx="740.0" cy="382.747935331748" r="4" fill="green" />
+<text x="740.0" y="372.747935331748" text-anchor="middle" font-family="Arial" font-size="10" fill="green">3.3x</text>
+<polyline points="60.0,264.6584913260065 173.33333333333331,372.24987728128525 286.66666666666663,447.61323800132726 400.0,502.28899551506396 513.3333333333333,519.3989719966564 626.6666666666667,529.4716689423622 740.0,527.5425500352492" fill="none" stroke="red" stroke-width="3"/>
+<circle cx="60.0" cy="264.6584913260065" r="4" fill="red" />
+<text x="60.0" y="254.65849132600653" text-anchor="middle" font-family="Arial" font-size="10" fill="red">5.9x</text>
+<circle cx="173.33333333333331" cy="372.24987728128525" r="4" fill="red" />
+<text x="173.33333333333331" y="362.24987728128525" text-anchor="middle" font-family="Arial" font-size="10" fill="red">3.6x</text>
+<circle cx="286.66666666666663" cy="447.61323800132726" r="4" fill="red" />
+<text x="286.66666666666663" y="437.61323800132726" text-anchor="middle" font-family="Arial" font-size="10" fill="red">2.0x</text>
+<circle cx="400.0" cy="502.28899551506396" r="4" fill="red" />
+<text x="400.0" y="492.28899551506396" text-anchor="middle" font-family="Arial" font-size="10" fill="red">0.8x</text>
+<circle cx="513.3333333333333" cy="519.3989719966564" r="4" fill="red" />
+<text x="513.3333333333333" y="509.3989719966564" text-anchor="middle" font-family="Arial" font-size="10" fill="red">0.4x</text>
+<circle cx="626.6666666666667" cy="529.4716689423622" r="4" fill="red" />
+<text x="626.6666666666667" y="519.4716689423622" text-anchor="middle" font-family="Arial" font-size="10" fill="red">0.2x</text>
+<circle cx="740.0" cy="527.5425500352492" r="4" fill="red" />
+<text x="740.0" y="517.5425500352492" text-anchor="middle" font-family="Arial" font-size="10" fill="red">0.3x</text>
+<polyline points="60.0,267.62565743654767 173.33333333333331,273.64669206106254 286.66666666666663,304.1887765084172 400.0,454.45276160596393 513.3333333333333,501.22494420552164 626.6666666666667,520.9605956308304 740.0,516.7154276530086" fill="none" stroke="purple" stroke-width="3"/>
+<circle cx="60.0" cy="267.62565743654767" r="4" fill="purple" />
+<text x="60.0" y="257.62565743654767" text-anchor="middle" font-family="Arial" font-size="10" fill="purple">5.8x</text>
+<circle cx="173.33333333333331" cy="273.64669206106254" r="4" fill="purple" />
+<text x="173.33333333333331" y="263.64669206106254" text-anchor="middle" font-family="Arial" font-size="10" fill="purple">5.7x</text>
+<circle cx="286.66666666666663" cy="304.1887765084172" r="4" fill="purple" />
+<text x="286.66666666666663" y="294.1887765084172" text-anchor="middle" font-family="Arial" font-size="10" fill="purple">5.0x</text>
+<circle cx="400.0" cy="454.45276160596393" r="4" fill="purple" />
+<text x="400.0" y="444.45276160596393" text-anchor="middle" font-family="Arial" font-size="10" fill="purple">1.8x</text>
+<circle cx="513.3333333333333" cy="501.22494420552164" r="4" fill="purple" />
+<text x="513.3333333333333" y="491.22494420552164" text-anchor="middle" font-family="Arial" font-size="10" fill="purple">0.8x</text>
+<circle cx="626.6666666666667" cy="520.9605956308304" r="4" fill="purple" />
+<text x="626.6666666666667" y="510.9605956308304" text-anchor="middle" font-family="Arial" font-size="10" fill="purple">0.4x</text>
+<circle cx="740.0" cy="516.7154276530086" r="4" fill="purple" />
+<text x="740.0" y="506.71542765300865" text-anchor="middle" font-family="Arial" font-size="10" fill="purple">0.5x</text>
+</svg>
