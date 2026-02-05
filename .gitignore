@@ -1,10 +1,10 @@
-# Build Artifacts
+# Build artifacts
 flash_attn
 flash_attention
 *.o
 *.dSYM/
 
-# Benchmarks and Plots (remove if you want to track them)
+# Benchmarks and plots
 benchmark_results.csv
 
 # System
