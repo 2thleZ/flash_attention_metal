@@ -10,7 +10,7 @@ const int N = 1024; // Sequence length
 const int D = 64;   // Head dimension
 const float SCALE = 1.0f / sqrt(D);
 
-// helper for errors
+// Helper for Metal errors
 void checkError(NSError *error) {
   if (error) {
     std::cerr << "Metal Error: " << [error.localizedDescription UTF8String]
@@ -19,9 +19,8 @@ void checkError(NSError *error) {
   }
 }
 
-// random init
 void initRandom(float *data, int size) {
-  std::mt19937 gen(42);
+  std::mt19937 gen(42); // fixed seed for reproducibility
   std::uniform_real_distribution<float> dis(-1.0f, 1.0f);
   for (int i = 0; i < size; i++) {
     data[i] = dis(gen);
@@ -30,6 +29,12 @@ void initRandom(float *data, int size) {
 
 int main() {
   @autoreleasepool {
+    // Metal Capture Setup
+    MTLCaptureDescriptor *captureDescriptor =
+        [[MTLCaptureDescriptor alloc] init];
+    captureDescriptor.captureObject = MTLCreateSystemDefaultDevice();
+    captureDescriptor.destination = MTLCaptureDestinationGPUTraceDocument;
+
     // setup metal
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     if (!device) {
@@ -159,6 +164,9 @@ int main() {
     [commandBuffer commit];
     [commandBuffer waitUntilCompleted];
 
+    // Note: To capture a specific kernel, wrap dispatch calls with
+    // MTLCaptureManager start/stop.
+
     std::cout << "FlashAttention Completed." << std::endl;
 
     // verify results
@@ -196,9 +204,6 @@ int main() {
         [device newBufferWithLength:sz_c options:MTLResourceStorageModeShared];
     id<MTLBuffer> V_c =
         [device newBufferWithLength:sz_c options:MTLResourceStorageModeShared];
-    id<MTLBuffer> O_c =
-        [device newBufferWithLength:sz_c
-                            options:MTLResourceStorageModeShared]; // Output
 
     id<MTLBuffer> Q_ch =
         [device newBufferWithLength:sz_c_h
@@ -275,16 +280,13 @@ int main() {
       [cmdbuf waitUntilCompleted];
     }
 
-    // cpu reference causal
+    // CPU reference for causal attention
     std::vector<float> O_ref(N_causal * D);
     for (int i = 0; i < N_causal; ++i) {
-      // softmax(q[i] * k[0..i]^t)
-      // calculating max score
       float max_s = -INFINITY;
-      // Keep scores
       std::vector<float> scores(i + 1);
 
-      for (int j = 0; j <= i; ++j) { // CAUSAL: only up to i
+      for (int j = 0; j <= i; ++j) {
         float score = 0.0f;
         for (int d = 0; d < D; ++d)
           score += qc_f[i * D + d] * kc_f[j * D + d];
@@ -294,14 +296,12 @@ int main() {
           max_s = score;
       }
 
-      // softmax
       float sum_exp = 0.0f;
       for (int j = 0; j <= i; ++j) {
         scores[j] = exp(scores[j] - max_s);
         sum_exp += scores[j];
       }
 
-      // weighted sum v
       for (int d = 0; d < D; ++d) {
         float val = 0.0f;
         for (int j = 0; j <= i; ++j) {
@@ -548,8 +548,6 @@ int main() {
         [enc setBytes:&D length:sizeof(int) atIndex:5];
         [enc setBytes:&SCALE length:sizeof(float) atIndex:6];
 
-        int batch_stride =
-            curr_n * D; // Since Heads=1, BatchStride = HeadStride * Heads? No.
         // If B=1, H=1.
         // Batch Stride = H * N * D? Yes.
         // Head Stride = N * D.
@@ -568,7 +566,6 @@ int main() {
         // Grid: Z=Batch, Y=Head, X=N/Br
         int Br = 16;
         int num_blocks = (curr_n + Br - 1) / Br;
-        // dispatchThreadgroups allows exact grid specification
         MTLSize groupsGrid = MTLSizeMake(num_blocks, H, B);
         MTLSize threadsGroup = MTLSizeMake(32, 1, 1);
 
@@ -598,7 +595,6 @@ int main() {
 
     int B = 16;
     int H = 8;
-    int total_load_factor = B * H;
 
     // load backward kernel
     id<MTLFunction> flashBwdFunc =
@@ -608,9 +604,7 @@ int main() {
     checkError(error);
 
     for (int curr_n : sizes) {
-      // We only allocate what fits in memory. B*H*N*D.
-      // For N=4096, 16*8*4096*64 * 4 bytes = 128MB. Fits easily.
-      // For N=16384, 512MB. Fits.
+      // Allocate buffers (cap at 1GB)
 
       size_t total_elems = (size_t)B * H * curr_n * D;
       size_t size_bytes_f = total_elems * sizeof(float);
@@ -622,15 +616,6 @@ int main() {
 
       // Reuse buffers if possible? No, need new size.
       id<MTLBuffer> Q_f =
-          [device newBufferWithLength:size_bytes_f
-                              options:MTLResourceStorageModeShared];
-      id<MTLBuffer> K_f =
-          [device newBufferWithLength:size_bytes_f
-                              options:MTLResourceStorageModeShared];
-      id<MTLBuffer> V_f =
-          [device newBufferWithLength:size_bytes_f
-                              options:MTLResourceStorageModeShared];
-      id<MTLBuffer> O_f =
           [device newBufferWithLength:size_bytes_f
                               options:MTLResourceStorageModeShared];
 
@@ -695,24 +680,7 @@ int main() {
 
       // Init O_h (Forward output) - Optional, kernel overwrites it.
 
-      // V2 (Float4) dispatch
-      // Existing kernel `flash_attention_v2_kernel` does NOT support
-      // stride/Batch/Heads. It assumes flat grid. We can dispatch
-      // `total_load_factor` grid blocks? gid.z is used? No. But `bid.x` is used
-      // strictly for block index. We can Launch Total N = (B*H*N). The V2
-      // kernel treats it as one giant sequence of length Total N. Is that
-      // valid? Naive Attention: O[i] depends on Q[i] dot K[all]. If we concat,
-      // O[i] depends on K[all]. FlashAttention: The kernel logic `row_q = bx *
-      // Br + tx`. If we make N_total = B*H*N. It will attend to ALL B*H*N keys?
-      // YES. That changes computational complexity from O( (BHN)^2 ) to O(BH *
-      // N^2). We CANNOT use the V2 kernel "as is" for batched without
-      // modification unless we accept it computes full attention over the whole
-      // batch (which is slower).
-
-      // So we cannot fairly benchmark V2 on Batch/Head unless we mod it.
-      // But we can benchmark V4 (which supports it).
-
-      // Time V4 Forward (with L write)
+      // V4 Forward (with L write)
       double flashV4Time = 0.0;
       {
         auto start = std::chrono::high_resolution_clock::now();

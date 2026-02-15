@@ -21,18 +21,14 @@ kernel void naive_attention_kernel(
 {
     if (id >= (uint)N) return;
 
-    // compute scores: s[id, :] = q[id, :] * k^t
-    // store n scores for this query
-    // risk of register pressure if n is large, but for n=1024 it fits
-    // doing online softmax on the fly to avoid o(n) storage
+    // Compute scores: s[id, :] = q[id, :] * k^t
+    // Online softmax handles O(N) storage avoidance
     
     float max_score = -INFINITY;
     float sum_exp = 0.0f;
     
-    // store weighted sum of v
-    // d=64 fits in registers
-    
-    float acc[64]; // Hardcoded D=64 for now, or use dynamic if possible (not in MSL arrays)
+    // Weighted sum of V
+    float acc[64];
     for (int d=0; d<64; ++d) acc[d] = 0.0f;
 
     // pass 1: find max for stability
@@ -85,18 +81,12 @@ kernel void flash_attention_kernel(
     uint3 tid [[thread_position_in_threadgroup]],
     uint3 bid [[threadgroup_position_in_grid]])
 {
-    // shared memory
-    threadgroup float Q_tile[32 * 64]; // Br * D
-    threadgroup float K_tile[32 * 64]; // Bc * D
-    threadgroup float V_tile[32 * 64]; // Bc * D
+    // Shared Memory
+    threadgroup float Q_tile[32 * 64]; 
+    threadgroup float K_tile[32 * 64]; 
+    threadgroup float V_tile[32 * 64]; 
     
-    // Accumulators for Output and Statistics
-    // Each thread handles one row of Q (one query)
-    // So we need accumulators for O[i] (size D) and l[i], m[i]
-    // But wait, if Br=64 and threads=64, each thread holds its own acc.
-    // D=64 is too large for registers per thread? 
-    // 64 floats = 256 bytes. It's okay-ish.
-    
+    // Accumulators
     float o_acc[64];
     for(int i=0; i<64; ++i) o_acc[i] = 0.0f;
     
@@ -125,10 +115,7 @@ kernel void flash_attention_kernel(
     int num_blocks_k = (N + Bc - 1) / Bc;
     
     for (int j = 0; j < num_blocks_k; ++j) {
-        // Load K_tile, V_tile
-        // We have 64 threads, but only 32 rows in K_tile/V_tile.
-        // Threads 0..31 load K, Threads 32..63 load V?
-        // Or just first 32 threads load both?
+        // Load K/V tiles
         
         if (tx < (uint)Bc) {
             uint row_k = j * Bc + tx;
@@ -158,10 +145,7 @@ kernel void flash_attention_kernel(
             }
             score *= scale;
             
-            // online softmax update
-            // m_new = max(m, score)
-            // l_new = l * exp(m - m_new) + exp(score - m_new)
-            // o_new = o * exp(m - m_new) + exp(score - m_new) * v[k]
+            // Online softmax update
             
             float m_prev = m;
             m = max(m_prev, score);
@@ -251,10 +235,8 @@ kernel void flash_attention_simd_kernel(
     for (int j = 0; j < num_blocks; ++j) {
         uint g_col = j * Bc;
         
-        // load k (transposed) and v into shared
-        // k: [d, bc], v: [bc, d]
-        
-        // vectorized load k and v (128-bit)
+        // Load K (transposed) and V into Shared Memory
+        // Vectorized load (128-bit)
         
         device const uint4* K_curr_vec = (device const uint4*)K; 
         device const uint4* V_curr_vec = (device const uint4*)V; 
@@ -317,10 +299,7 @@ kernel void flash_attention_simd_kernel(
             }
         }
         
-        // online softmax update
-        // store s to shared to do scalar softmax
-        
-        // store s to shared (overwrite q_shared)
+        // Online Softmax: Store S to shared for scalar reduction
         
         for(int r=0; r<2; ++r) {
             for(int c=0; c<2; ++c) {
@@ -364,109 +343,33 @@ kernel void flash_attention_simd_kernel(
         
         // apply correction to acc
         
-        // spill-scale-reload for acc
+        // IMPLEMENTATION: Spill-Scale-Reload Strategy
+        // This avoids 16 expensive MatMuls for scalar scaling.
         
-        // ALTERNATIVE: Use the definition of SIMD layout?
-        // Metal SIMD matrices are opaque.
-        //
-        // Let's punt and use the "Correction Matrix" approach. It's elegant.
-        // We need a 16x16 matrix where M[i,i] = correction[i] and 0 elsewhere.
-        // We can build this in `Q_shared` (re-used again, or use another space).
-        // We compute correction[i] and store it.
-        
-        // Let thread `lane` (0..15) compute correction.
-        // m, l are local vars. But they assume this thread OWNS row `lane`.
-        // In the final write out, we need to know which row we own.
-        // Simdgroup matrix owner logic is complex.
-        
-        // Simplification for the Demo:
-        // Calculate P matrix (in Q_shared).
-        // Load P into registers.
-        // Load V into registers (chunked).
-        // Acc += P * V.
-        //
-        // Scaling OF PREVIOUS ACC?
-        // Standard FlashAttention: O_new = diag(correction) * O_old + P * V.
-        // We can do: O_old = diag(correction) * O_old.
-        //
-        // So:
-        // 1. Compute corrections (scalar).
-        // 2. Construct Correction Matrix 'Corr' (16x16 diagonal) in shared.
-        // 3. Load Corr as tiles.
-        // 4. Update Acc: Acc = Corr * Acc. (16x16 * 16x64).
-        // 5. Compute Update: Update = P * V. (16x16 * 16x64).
-        // 6. Acc += Update.
-        
-        // IMPLEMENTATION OF 1 & 2 & 3:
-        // Shared buffer for Corr matrix. Let's reuse K_trans_shared (64x16). 
-        // We need 16x16.
-        // Initialize to 0.
-        // 32 threads.
-        
-        // Need to broadcast m_prev, m_block etc.
-        // Each thread (0..15) handles one row.
-        // It maintains its own running l and m stats.
-        // Wait, `l` and `m` arrays in registers?
-        // Each thread 0..15 can store l[row], m[row].
-        // But what about threads 16..31? They do nothing for stats?
-        // Metal SIMD executes in lockstep.
+        // 1. Store Correction Factors
+        // Use available space in Q_shared [256..]
         
         float my_correction = 1.0f;
         if (lane < 16) {
-             // Retrieve state
-             // We need persistent state arrays for l and m?
-             // Not possible to index registers dynamically.
-             // We can use a small array `float stat_m[1], stat_l[1]` since thread `i` ALWAYS handles row `i`.
-             
-             // Update logic
              float m_prev = m;
              float m_new = max(m_prev, m_block);
              
-             // P currently is exp(score - m_block).
-             // If we change global max to m_new.
-             // global_P = exp(score - m_block) * exp(m_block - m_new) = P * correction.
-             // So P needs to be scaled by exp(m_block - m_new).
-             // AND Acc needs to be scaled by exp(m_prev - m_new).
-             
              float corr_acc = exp(m_prev - m_new);
-             float corr_p = exp(m_block - m_new); // scaling for p
+             float corr_p = exp(m_block - m_new); 
              
              m = m_new;
              l = l * corr_acc + l_block * corr_p;
              
              my_correction = corr_acc;
              
-             // Update P in shared memory with correct scaling
-             // Row `lane` in Q_shared (which holds P)
+             // Scale P in shared memory
              for(int c=0; c<16; ++c) {
                 Q_shared[lane*16 + c] *= corr_p;
              }
         }
         simdgroup_barrier(mem_flags::mem_threadgroup);
 
-        // IMPLEMENTATION: Spill-Scale-Reload Strategy
-        // This avoids 16 expensive MatMuls for scalar scaling.
-        
-        // 1. Store Correction Factors to Shared Memory
-        // Reuse first 16 elements of K_trans_shared (temporarily) or use a dedicated small buffer?
-        // K_trans_shared is 1024 elements. We use it for Acc Spill next.
-        // But we need 'corrections' available WHILE we scale Acc in K_trans_shared.
-        // We can store corrections at K_trans_shared[1024-32] (end of buffer) just to be safe/organized?
-        // Or just K_trans_shared[0..15] since we process row-by-row?
-        // Actually, if we spill Acc to K_trans_shared, Acc[0..15] will overwrite K_trans[0..15].
-        // We need 'corrections' to persist.
-        // Let's use a separate shared variable? logic inside kernel?
-        // "threadgroup half shared_corrections[16];" - declared at top?
-        // No, we can't add var easily in replace block without changing top.
-        // Let's use Q_shared [offset 512]? Q_shared is 1024 elements (16x64).
-        // It holds P (16x16) in first 256 elements.
-        // Rest (256..1023) is unused? P is 16x16.
-        // Yes! Q_shared[256...] is free? 
-        // Wait, did we clear Q_shared? In step 4 (update P), we accessed Q_shared.
-        // Q_shared was loaded with Q (16x64). P overwrites first 16x16.
-        // So Q_shared[256..1023] still holds old Q. We don't need old Q.
-        // SO WE CAN USE Q_shared[256] for corrections!
-        
+        // Store correction factors
         if (lane < 16) {
              Q_shared[256 + lane] = (half)my_correction;
         }
@@ -537,8 +440,6 @@ kernel void flash_attention_simd_kernel(
     simdgroup_barrier(mem_flags::mem_threadgroup);
     
     // Apply InvL * Acc -> Output Store
-    // We can store directly to global memory by computing tile by tile?
-    // We calculate T = InvL * Acc_sub, then Store T.
     
     simdgroup_float8x8 l_tiles[2][2];
     for(int r=0; r<2; ++r) for(int c=0; c<2; ++c)
@@ -724,14 +625,11 @@ kernel void flash_attention_v4_half_kernel(
     const int Bc = 16;
     // D = 64.
     
-    // grid mapping
+    // Grid Mapping
     uint batch_offset = bid.z * batch_stride + bid.y * head_stride;
-    
-    // L offset: [B, H, N]. 
-    // L_base_idx = batch_offset / D.
     uint l_base_idx = batch_offset / D;
 
-    // batch/head pointers
+    // Pointers
     device const half* Q_curr = Q + batch_offset;
     device const half* K_curr = K + batch_offset;
     device const half* V_curr = V + batch_offset;
@@ -756,12 +654,9 @@ kernel void flash_attention_v4_half_kernel(
     uint g_row = bid.x * Br;
     uint lane = simd_lane_id;
 
-    // load q (uint4 vectorized)
-    
+    // Load Q (Vectorized)
     device const uint4* Q_curr_vec = (device const uint4*)Q_curr;
     threadgroup uint4* Q_shared_vec = (threadgroup uint4*)Q_shared;
-    
-    // each thread loads 4 vectors
     
     for (int k = 0; k < 4; ++k) {
         uint vec_idx = lane + k * 32;
@@ -976,6 +871,21 @@ kernel void flash_attention_v4_half_kernel(
         }
     }
     // inv_l * acc -> output
+    simdgroup_half8x8 l_tiles[2][2];
+    for(int r=0; r<2; ++r) for(int c=0; c<2; ++c)
+       simdgroup_load(l_tiles[r][c], K_trans_shared, 16, ulong2(c*8, r*8));
+       
+    for(int c=0; c<8; ++c) { 
+        for(int r=0; r<2; ++r) { 
+             simdgroup_half8x8 result((half)0.0h);
+             for(int k=0; k<2; ++k) {
+                 simdgroup_multiply_accumulate(result, l_tiles[r][k], acc[k][c], result);
+             }
+             
+             if (g_row + r*8 < (uint)N) { 
+                 simdgroup_store(result, O_curr, D, ulong2(c*8, g_row + r*8));
+             }
+        }
     }
 }
 
