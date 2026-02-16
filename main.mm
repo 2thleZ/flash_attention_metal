@@ -339,13 +339,13 @@ int main() {
     // benchmark
     std::cout << "\n--- Benchmarking ---\n";
     std::cout << "N,Naive(ms),Flash(ms),FlashV2(ms),FlashV3(ms),FlashV4(ms),"
-                 "SpeedupV2,SpeedupV4"
+                 "SpeedupV1,SpeedupV2,SpeedupV3,SpeedupV4"
               << std::endl;
 
     std::ofstream csvFile("benchmark_results.csv");
     if (csvFile.is_open()) {
       csvFile << "N,Naive(ms),Flash(ms),FlashV2(ms),FlashV3(ms),FlashV4(ms),"
-                 "SpeedupV2,SpeedupV4\n";
+                 "SpeedupV1,SpeedupV2,SpeedupV3,SpeedupV4\n";
     }
 
     std::vector<int> sizes = {128, 256, 512, 1024, 2048, 4096, 8192, 16384};
@@ -591,17 +591,21 @@ int main() {
             std::chrono::duration<double, std::milli>(end - start).count();
       }
 
+      double speedupV1 = (naiveTime > 0) ? naiveTime / flashTime : 0;
       double speedupV2 = (naiveTime > 0) ? naiveTime / flashV2Time : 0;
+      double speedupV3 = (naiveTime > 0) ? naiveTime / flashV3Time : 0;
       double speedupV4 = (naiveTime > 0) ? naiveTime / flashV4Time : 0;
 
       std::cout << curr_n << "," << naiveTime << "," << flashTime << ","
                 << flashV2Time << "," << flashV3Time << "," << flashV4Time
-                << "," << speedupV2 << "," << speedupV4 << std::endl;
+                << "," << speedupV1 << "," << speedupV2 << "," << speedupV3
+                << "," << speedupV4 << std::endl;
 
       if (csvFile.is_open()) {
         csvFile << curr_n << "," << naiveTime << "," << flashTime << ","
                 << flashV2Time << "," << flashV3Time << "," << flashV4Time
-                << "," << speedupV2 << "," << speedupV4 << "\n";
+                << "," << speedupV1 << "," << speedupV2 << "," << speedupV3
+                << "," << speedupV4 << "\n";
         csvFile.flush();
       }
     }
