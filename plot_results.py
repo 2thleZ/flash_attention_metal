@@ -21,24 +21,24 @@ def parse_results(filename):
                 # skip empty lines or headers
                 if not line.strip() or "N,Naive(ms)" in line or len(parts) < 8:
                     continue
-                    try:
-                        n = int(parts[0])
-                        # n:0, na:1, fl:2, v2:3, v3:4, v4:5, s2:6, s4:7
-                        
-                        naive = float(parts[1])
-                        time_v1 = float(parts[2])
-                        time_v2 = float(parts[3])
-                        time_v3 = float(parts[4])
-                        time_v4 = float(parts[5])
-                        
-                        if naive > 0: 
-                            n_vals.append(n)
-                            speedup_v1_vals.append(naive/time_v1 if time_v1>0 else 0)
-                            speedup_v2_vals.append(naive/time_v2 if time_v2>0 else 0)
-                            speedup_v3_vals.append(naive/time_v3 if time_v3>0 else 0)
-                            speedup_v4_vals.append(naive/time_v4 if time_v4>0 else 0)
-                    except ValueError:
-                        continue
+                try:
+                    n = int(parts[0])
+                    # n:0, na:1, fl:2, v2:3, v3:4, v4:5, s2:6, s4:7
+                    
+                    naive = float(parts[1])
+                    time_v1 = float(parts[2])
+                    time_v2 = float(parts[3])
+                    time_v3 = float(parts[4])
+                    time_v4 = float(parts[5])
+                    
+                    if naive > 0: 
+                        n_vals.append(n)
+                        speedup_v1_vals.append(naive/time_v1 if time_v1>0 else 0)
+                        speedup_v2_vals.append(naive/time_v2 if time_v2>0 else 0)
+                        speedup_v3_vals.append(naive/time_v3 if time_v3>0 else 0)
+                        speedup_v4_vals.append(naive/time_v4 if time_v4>0 else 0)
+                except ValueError:
+                    continue
     except FileNotFoundError:
         print("File not found")
         return [], [], [], [], []
