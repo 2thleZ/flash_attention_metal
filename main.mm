@@ -144,18 +144,13 @@ int main() {
     [computeEncoder setBytes:&D length:sizeof(int) atIndex:5];
     [computeEncoder setBytes:&SCALE length:sizeof(float) atIndex:6];
 
-    // Grid: (N / Br) threadgroups
-    // Br = 32. So we need N/32 threadgroups.
-    // Each threadgroup has 32 threads.
-    // Total threads = N.
+    // calculating grid dimensions (N total threads, 32 per group)
 
     MTLSize flashGridSize = MTLSizeMake(N, 1, 1);
     MTLSize flashGroupSize = MTLSizeMake(32, 1, 1); // Must match Br
 
-    // Use dispatchThreadgroups if supported, or dispatchThreads
-    // dispatchThreads maps to grid.
-    // If we use dispatchThreads(N, 1, 1) with group(32, 1, 1), we get N/32
-    // groups. This matches our kernel logic (gid, tid, bid).
+    // dispatching threads to match grid size
+    // ensuring threadgroups align with kernel logic (N/32 groups)
 
     [computeEncoder dispatchThreads:flashGridSize
               threadsPerThreadgroup:flashGroupSize];
@@ -192,10 +187,8 @@ int main() {
     // We use N=128
     int N_causal = 128;
 
-    // Allocate
-    size_t sz_c =
-        N_causal * D *
-        sizeof(float); // We'll use Float buffers and cast for V4 input
+    // using float buffers and casting for V4 input
+    size_t sz_c = N_causal * D * sizeof(float);
     size_t sz_c_h = N_causal * D * sizeof(uint16_t);
 
     id<MTLBuffer> Q_c =
@@ -245,7 +238,7 @@ int main() {
     // dispatch v4 causal
     {
       id<MTLComputePipelineState> causalPSO = nil;
-      // Load V4 kernel locally
+      // loading V4 kernel locally
       id<MTLFunction> fn =
           [library newFunctionWithName:@"flash_attention_v4_half_kernel"];
       causalPSO = [device newComputePipelineStateWithFunction:fn error:&error];
@@ -327,14 +320,14 @@ int main() {
     else
       std::cout << "CAUSAL FAILED" << std::endl;
 
-    // Load FlashAttention V2 kernel
+    // loading FlashAttention V2 kernel
     id<MTLFunction> flashV2Func =
         [library newFunctionWithName:@"flash_attention_v2_kernel"];
     id<MTLComputePipelineState> flashV2PSO =
         [device newComputePipelineStateWithFunction:flashV2Func error:&error];
     checkError(error);
 
-    // Load FlashAttention V3 kernel (Matrix Intrinsics)
+    // loading FlashAttention V3 kernel (Matrix Intrinsics)
     id<MTLFunction> flashV3Func =
         [library newFunctionWithName:@"flash_attention_simd_kernel"];
     id<MTLComputePipelineState> flashV3PSO =
@@ -349,7 +342,7 @@ int main() {
 
     std::vector<int> sizes = {128, 256, 512, 1024, 2048, 4096, 8192, 16384};
 
-    // load v4 kernel
+    // loading v4 kernel
     id<MTLFunction> flashV4Func =
         [library newFunctionWithName:@"flash_attention_v4_half_kernel"];
     id<MTLComputePipelineState> flashV4PSO =
@@ -359,7 +352,7 @@ int main() {
     for (int curr_n : sizes) {
       size_t currSize = curr_n * D * sizeof(float);
       size_t currSizeHalf =
-          curr_n * D * sizeof(uint16_t); // Half precision size
+          curr_n * D * sizeof(uint16_t); // half precision size
 
       id<MTLBuffer> Q_curr =
           [device newBufferWithLength:currSize
@@ -374,7 +367,7 @@ int main() {
           [device newBufferWithLength:currSize
                               options:MTLResourceStorageModeShared];
 
-      // Buffers for Half Precision (V4)
+      // allocating buffers for half precision
       id<MTLBuffer> Q_half =
           [device newBufferWithLength:currSizeHalf
                               options:MTLResourceStorageModeShared];
@@ -518,9 +511,8 @@ int main() {
 
         int Br = 16;
         int num_groups = (curr_n + Br - 1) / Br;
-        MTLSize gridSize = MTLSizeMake(num_groups * 32, 1, 1); // Threads
-        MTLSize groupSize =
-            MTLSizeMake(32, 1, 1); // Br=16, 32 threads/group (Simdgroup)
+        MTLSize gridSize = MTLSizeMake(num_groups * 32, 1, 1);
+        MTLSize groupSize = MTLSizeMake(32, 1, 1);
 
         [enc dispatchThreads:gridSize threadsPerThreadgroup:groupSize];
         [enc endEncoding];
@@ -563,7 +555,7 @@ int main() {
         bool is_causal = false;
         [enc setBytes:&is_causal length:sizeof(bool) atIndex:10];
 
-        // Grid: Z=Batch, Y=Head, X=N/Br
+        // configuring grid dimensions: Z=Batch, Y=Head, X=Blocks
         int Br = 16;
         int num_blocks = (curr_n + Br - 1) / Br;
         MTLSize groupsGrid = MTLSizeMake(num_blocks, H, B);
@@ -652,8 +644,8 @@ int main() {
           [device newBufferWithLength:size_bytes_f
                               options:MTLResourceStorageModeShared];
 
-      // init
-      initRandom((float *)Q_f.contents, curr_n * D); // Init Q (reuse for Q_h)
+      // Init Q_f -> Q_h
+      initRandom((float *)Q_f.contents, curr_n * D);
 
       // Convert Q_f -> Q_h
       float *q_f_ptr = (float *)Q_f.contents;
@@ -665,22 +657,18 @@ int main() {
       }
 
       // Init dO (random) -> dO_h
-      initRandom((float *)Q_f.contents,
-                 curr_n * D); // Generate random in Q_f scratch
+      initRandom((float *)Q_f.contents, curr_n * D);
       uint16_t *do_h_ptr = (uint16_t *)dO_h.contents;
       for (int i = 0; i < curr_n * D; ++i) {
         __fp16 val = (__fp16)(q_f_ptr[i] * 0.01f);
         do_h_ptr[i] = *(uint16_t *)&val;
       }
 
-      // Reuse Q init for K, V? Or just copy Q_h to K_h, V_h for speed?
-      // memcpy is fast.
+      // Initialize K and V (copy from Q for simplicity)
       memcpy(K_h.contents, Q_h.contents, size_bytes_h);
       memcpy(V_h.contents, Q_h.contents, size_bytes_h);
 
-      // Init O_h (Forward output) - Optional, kernel overwrites it.
-
-      // V4 Forward (with L write)
+      // benchmarking V4 Forward (with L write)
       double flashV4Time = 0.0;
       {
         auto start = std::chrono::high_resolution_clock::now();
