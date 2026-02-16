@@ -1,6 +1,8 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <cmath>
+#include <cstring>
+#include <fstream>
 #include <iostream>
 #include <random>
 #include <vector>
@@ -340,6 +342,12 @@ int main() {
                  "SpeedupV2,SpeedupV4"
               << std::endl;
 
+    std::ofstream csvFile("benchmark_results.csv");
+    if (csvFile.is_open()) {
+      csvFile << "N,Naive(ms),Flash(ms),FlashV2(ms),FlashV3(ms),FlashV4(ms),"
+                 "SpeedupV2,SpeedupV4\n";
+    }
+
     std::vector<int> sizes = {128, 256, 512, 1024, 2048, 4096, 8192, 16384};
 
     // loading v4 kernel
@@ -412,6 +420,8 @@ int main() {
       // time naive
       double naiveTime = 0.0;
       if (curr_n <= 8192) {
+        // clear output buffer
+        memset(O_curr.contents, 0, currSize);
         auto start = std::chrono::high_resolution_clock::now();
 
         id<MTLCommandBuffer> cmdbuf = [commandQueue commandBuffer];
@@ -440,6 +450,8 @@ int main() {
       // time flash v1
       double flashTime = 0.0;
       {
+        // clear output buffer
+        memset(O_curr.contents, 0, currSize);
         auto start = std::chrono::high_resolution_clock::now();
 
         id<MTLCommandBuffer> cmdbuf = [commandQueue commandBuffer];
@@ -468,6 +480,8 @@ int main() {
       // time v2
       double flashV2Time = 0.0;
       {
+        // clear output buffer
+        memset(O_curr.contents, 0, currSize);
         auto start = std::chrono::high_resolution_clock::now();
 
         id<MTLCommandBuffer> cmdbuf = [commandQueue commandBuffer];
@@ -496,6 +510,8 @@ int main() {
       // time v3 (matrix)
       double flashV3Time = 0.0;
       {
+        // clear output buffer
+        memset(O_curr.contents, 0, currSize);
         auto start = std::chrono::high_resolution_clock::now();
 
         id<MTLCommandBuffer> cmdbuf = [commandQueue commandBuffer];
@@ -527,6 +543,9 @@ int main() {
       // time v4 (fp16)
       double flashV4Time = 0.0;
       {
+        // clear output buffers
+        memset(O_half.contents, 0, currSizeHalf);
+        memset(L_buf.contents, 0, size_l_bytes);
         auto start = std::chrono::high_resolution_clock::now();
 
         id<MTLCommandBuffer> cmdbuf = [commandQueue commandBuffer];
@@ -578,6 +597,13 @@ int main() {
       std::cout << curr_n << "," << naiveTime << "," << flashTime << ","
                 << flashV2Time << "," << flashV3Time << "," << flashV4Time
                 << "," << speedupV2 << "," << speedupV4 << std::endl;
+
+      if (csvFile.is_open()) {
+        csvFile << curr_n << "," << naiveTime << "," << flashTime << ","
+                << flashV2Time << "," << flashV3Time << "," << flashV4Time
+                << "," << speedupV2 << "," << speedupV4 << "\n";
+        csvFile.flush();
+      }
     }
 
     // high occupancy benchmark (b=16, h=8)
@@ -671,6 +697,9 @@ int main() {
       // benchmarking V4 Forward (with L write)
       double flashV4Time = 0.0;
       {
+        // clear output buffers
+        memset(O_h.contents, 0, size_bytes_h);
+        memset(L_buf.contents, 0, size_L);
         auto start = std::chrono::high_resolution_clock::now();
 
         id<MTLCommandBuffer> cmdbuf = [commandQueue commandBuffer];
@@ -718,6 +747,8 @@ int main() {
         memset(dQ.contents, 0, size_bytes_f);
         memset(dK.contents, 0, size_bytes_f);
         memset(dV.contents, 0, size_bytes_f);
+        // clear backward outputs if reused (dO is input, but dQ/dK/dV are
+        // outputs)
 
         auto start = std::chrono::high_resolution_clock::now();
 
@@ -784,6 +815,9 @@ int main() {
       std::string status = (sum_dq > 1e-9) ? "OK" : "ZERO/FAIL";
       std::cout << curr_n << ",N/A," << flashV4Time << "," << backwardTime
                 << "," << status << std::endl;
+    }
+    if (csvFile.is_open()) {
+      csvFile.close();
     }
   }
   return 0;

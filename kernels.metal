@@ -1085,7 +1085,7 @@ kernel void flash_attention_backward_kernel(
             simdgroup_barrier(mem_flags::mem_threadgroup);
         }
         
-        // Apply exp scale (Load half from p_store, calc float, store float to DS_shared)
+        // applying exponential scale to scores
         if (lane < 16) {
              for(int c=0; c<16; ++c) {
                  half s_val_h = p_store[lane*16 + c];
@@ -1096,8 +1096,7 @@ kernel void flash_attention_backward_kernel(
         }
         simdgroup_barrier(mem_flags::mem_threadgroup);
         
-        // Convert Float P -> Half P in place in DS_shared
-        // We pack 16x16 floats into 16x16 halfs (first half of buffer).
+        // converting back to half precision in-place
         if (lane < 16) {
              for(int c=0; c<16; ++c) {
                   float f_val = DS_shared[lane*16 + c];
@@ -1106,12 +1105,11 @@ kernel void flash_attention_backward_kernel(
         }
         simdgroup_barrier(mem_flags::mem_threadgroup);
         
-        // compute dv += p^t * do
+        // computing dv += p^t * do
         simdgroup_float8x8 dv_accum[2][8]; 
         for(int r=0; r<2; ++r) for(int c=0; c<8; ++c) dv_accum[r][c] = simdgroup_float8x8(0.0f);
         
-        // transpose p
-        // DS_shared is now Half matrix at the start.
+        // transposing p matrix
         if (lane < 16) {
              threadgroup half* p_ptr = (threadgroup half*)DS_shared;
              for (int c=lane+1; c<16; ++c) {
@@ -1134,7 +1132,7 @@ kernel void flash_attention_backward_kernel(
              }
         }
         
-        // compute dp = do * v^t
+        // computing dp = do * v^t
         simdgroup_half8x8 dp_regs[2][2];
         for(int r=0; r<2; ++r) for(int c=0; c<2; ++c) dp_regs[r][c] = simdgroup_half8x8((half)0.0h);
         
@@ -1148,9 +1146,8 @@ kernel void flash_attention_backward_kernel(
              }
         }
         
-        // compute ds = p * (dp - di)
-        // P needs to be Transposed Back.
-        // P is in DS_shared (Half).
+        // computing ds = p * (dp - di)
+        // transposing p back to original orientation
         simdgroup_barrier(mem_flags::mem_threadgroup);
         if (lane < 16) {
              threadgroup half* p_ptr = (threadgroup half*)DS_shared;
@@ -1183,7 +1180,7 @@ kernel void flash_attention_backward_kernel(
         for(int r=0; r<2; ++r) for(int c=0; c<2; ++c)
              simdgroup_load(ds_regs[r][c], V_trans_shared, 16, ulong2(c*8, r*8));
              
-        // compute dq += ds * k
+        // computing dq += ds * k
         for(int k=0; k<2; ++k) { 
              simdgroup_half8x8 k_reg_tiles[8];
              for(int c=0; c<8; ++c) {
@@ -1196,7 +1193,7 @@ kernel void flash_attention_backward_kernel(
              }
         }
         
-        // compute dk += ds^t * q
+        // computing dk += ds^t * q
         simdgroup_barrier(mem_flags::mem_threadgroup);
         if (lane < 16) {
              for (int c=lane+1; c<16; ++c) {
@@ -1206,7 +1203,7 @@ kernel void flash_attention_backward_kernel(
              }
         }
         simdgroup_barrier(mem_flags::mem_threadgroup);
-        // dS^T in V_trans_shared
+        // dS^T is in V_trans_shared
         
         simdgroup_half8x8 dst_regs[2][2];
         for(int r=0; r<2; ++r) for(int c=0; c<2; ++c)
@@ -1223,8 +1220,7 @@ kernel void flash_attention_backward_kernel(
              }
         }
         
-        // atomic update dk, dv
-        // Store FLOAT accumulators to grad_shared (FLOAT)
+        // accumulation of gradients via atomics
         for(int r=0; r<2; ++r) for(int c=0; c<8; ++c) 
             simdgroup_store(dk_acc[r][c], grad_shared, 64, ulong2(c*8, r*8));
         simdgroup_barrier(mem_flags::mem_threadgroup);
@@ -1258,9 +1254,9 @@ kernel void flash_attention_backward_kernel(
         simdgroup_barrier(mem_flags::mem_threadgroup);
     } 
     
-    // store dq
+    // storing dq via atomic store
     for(int r=0; r<2; ++r) for(int c=0; c<8; ++c) 
-        simdgroup_store(dq_acc[r][c], grad_shared, 64, ulong2(c*8, r*8)); // grad_shared (FLOAT)
+        simdgroup_store(dq_acc[r][c], grad_shared, 64, ulong2(c*8, r*8));
     simdgroup_barrier(mem_flags::mem_threadgroup);
     
     for(int i=0; i<32; ++i) {

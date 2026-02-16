@@ -18,7 +18,9 @@ def parse_results(filename):
                 continue
             if start_parsing:
                 parts = line.strip().split(',')
-                if len(parts) >= 8: # Assuming V4 is col 8 (SpeedupV4)
+                # skip empty lines or headers
+                if not line.strip() or "N,Naive(ms)" in line or len(parts) < 8:
+                    continue
                     try:
                         n = int(parts[0])
                         # n:0, na:1, fl:2, v2:3, v3:4, v4:5, s2:6, s4:7
