@@ -175,10 +175,10 @@ kernel void flash_attention_kernel(
 // 32 threads/group (simdgroup)
 
 kernel void flash_attention_simd_kernel(
-    device const float* Q [[buffer(0)]],
-    device const float* K [[buffer(1)]],
-    device const float* V [[buffer(2)]],
-    device float* O [[buffer(3)]],
+    device const half* Q [[buffer(0)]],
+    device const half* K [[buffer(1)]],
+    device const half* V [[buffer(2)]],
+    device half* O [[buffer(3)]],
     constant int& N [[buffer(4)]],
     constant int& D [[buffer(5)]],
     constant float& scale [[buffer(6)]],
@@ -190,15 +190,15 @@ kernel void flash_attention_simd_kernel(
     // const int D = 64; // Implicit 64
     
     // Shared Memory
-    threadgroup float Q_shared[16 * 64];
-    threadgroup float K_trans_shared[64 * 16]; // Transposed K: [D, Bc]
-    threadgroup float V_shared[16 * 64];
+    threadgroup half Q_shared[16 * 64];
+    threadgroup half K_trans_shared[64 * 16]; 
+    threadgroup half V_shared[16 * 64];
     
     // Output Accumulators: 16x64 result -> 2x8 tiles of 8x8
-    simdgroup_float8x8 acc[2][8]; 
+    simdgroup_half8x8 acc[2][8]; 
     for(int r=0; r<2; ++r) 
         for(int c=0; c<8; ++c) 
-            acc[r][c] = simdgroup_float8x8(0.0f);
+            acc[r][c] = simdgroup_half8x8(0.0h);
             
     float l = 0.0f;
     float m = -INFINITY;
@@ -208,14 +208,14 @@ kernel void flash_attention_simd_kernel(
 
     // 1. Load Q into Shared
     for (int i = 0; i < 32; ++i) {
-        int idx = lane + i * 32; // 0..1023
+        int idx = lane + i * 32; 
         if (idx < 16 * 64) {
             int r = idx / 64;
             int c = idx % 64;
             if (g_row + r < (uint)N) {
-                Q_shared[idx] = Q[(g_row + r) * 64 + c];
+                Q_shared[idx] = Q[(g_row + r) * 64 + c]; // Buffer #0 is half
             } else {
-                Q_shared[idx] = 0.0f;
+                Q_shared[idx] = 0.0h;
             }
         }
     }
@@ -223,7 +223,7 @@ kernel void flash_attention_simd_kernel(
     
     // load q into registers
     // 2x8 tiles
-    simdgroup_float8x8 q_regs[2][8];
+    simdgroup_half8x8 q_regs[2][8];
     for(int r=0; r<2; ++r) {
         for(int c=0; c<8; ++c) {
             simdgroup_load(q_regs[r][c], Q_shared, 64, ulong2(c*8, r*8));
@@ -236,55 +236,43 @@ kernel void flash_attention_simd_kernel(
         uint g_col = j * Bc;
         
         // Load K (transposed) and V into Shared Memory
-        // Vectorized load (128-bit)
         
-        device const uint4* K_curr_vec = (device const uint4*)K; 
-        device const uint4* V_curr_vec = (device const uint4*)V; 
-        threadgroup uint4* V_shared_vec = (threadgroup uint4*)V_shared;
-        
-        // 4 vectors per thread
-        for (int k = 0; k < 4; ++k) {
-            uint vec_idx = lane + k * 32;
-            
-            uint r = vec_idx / 8; // 0..15
-            uint c8 = vec_idx % 8; // 0..7
-            
-            uint4 val_k = uint4(0);
-            uint4 val_v = uint4(0);
-            
-            if (g_col + r < (uint)N) {
-                 uint global_row_idx = g_col + r;
-                 uint global_vec_offset_k_v = global_row_idx * (D/8) + c8;
-
-                 val_k = K_curr_vec[global_vec_offset_k_v];
-                 val_v = V_curr_vec[global_vec_offset_k_v];
-            }
-            
-            // store v
-            V_shared_vec[vec_idx] = val_v;
-            
-            // store k (unpack)
-            thread uint4* kp = &val_k;
-            thread half* val_k_ptr = (thread half*)kp;
-            
-            for(int x=0; x<8; ++x) {
-                int col = c8 * 8 + x;
-                K_trans_shared[col * 16 + r] = val_k_ptr[x];
-            }
+        for (int k = 0; k < 32; ++k) { 
+             
+             for(int i=0; i<32; ++i) { 
+                 int idx = lane + i*32; 
+                 
+                 int r = idx / 64; 
+                 int c = idx % 64; 
+                 
+                 // Load V 
+                 if (g_col + r < (uint)N) {
+                     V_shared[idx] = V[(g_col + r) * 64 + c];
+                 } else {
+                     V_shared[idx] = 0.0h;
+                 }
+                 
+                 // Load K (Transposed)
+                 if (g_col + r < (uint)N) {
+                     K_trans_shared[c * 16 + r] = K[(g_col + r) * 64 + c];
+                 } else {
+                     K_trans_shared[c * 16 + r] = 0.0h;
+                 }
+             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
         
         // compute scores s = q * k^t
         // 16x16 result, 2x2 tiles
         
-        simdgroup_float8x8 s_tiles[2][2];
+        simdgroup_half8x8 s_tiles[2][2];
         for(int r=0; r<2; ++r) 
             for(int c=0; c<2; ++c) 
-                s_tiles[r][c] = simdgroup_float8x8(0.0f);
+                s_tiles[r][c] = simdgroup_half8x8(0.0h);
         
         // loop 'k' over dimension d=64
         for(int k=0; k<8; ++k) {
-            simdgroup_float8x8 k_tile; // 8x8 slice of k^t
+            simdgroup_half8x8 k_tile; // 8x8 slice of k^t
             
             // Loop over output columns of S (2 tiles)
             for(int c=0; c<2; ++c) {
@@ -321,16 +309,17 @@ kernel void flash_attention_simd_kernel(
             // find row max
             float row_max = -INFINITY;
             for(int c=0; c<16; ++c) {
-                 float val = Q_shared[row * 16 + c] * scale;
+                 // Q_shared is half. row_max is float.
+                 float val = (float)Q_shared[row * 16 + c] * scale;
                  if (val > row_max) row_max = val;
-                 Q_shared[row * 16 + c] = val; // Store scaled
+                 Q_shared[row * 16 + c] = (half)val;
             }
             
             // Exponentials
             float row_sum = 0.0f;
             for(int c=0; c<16; ++c) {
-                float val = exp(Q_shared[row * 16 + c] - row_max);
-                Q_shared[row * 16 + c] = val; // Store P
+                float val = exp((float)Q_shared[row * 16 + c] - row_max);
+                Q_shared[row * 16 + c] = (half)val;
                 row_sum += val;
             }
             
@@ -364,7 +353,7 @@ kernel void flash_attention_simd_kernel(
              
              // Scale P in shared memory
              for(int c=0; c<16; ++c) {
-                Q_shared[lane*16 + c] *= corr_p;
+                Q_shared[lane*16 + c] *= (half)corr_p;
              }
         }
         simdgroup_barrier(mem_flags::mem_threadgroup);
@@ -378,7 +367,7 @@ kernel void flash_attention_simd_kernel(
         // 2. Spill Acc to K_trans_shared (16x64)
         for(int r=0; r<2; ++r) {
             for(int c=0; c<8; ++c) {
-                 // Store to K_trans_shared (treated as 16x64 with stride 64)
+                 // storing to K_trans_shared (treated as 16x64 with stride 64)
                  simdgroup_store(acc[r][c], K_trans_shared, 64, ulong2(c*8, r*8));
             }
         }
@@ -402,17 +391,17 @@ kernel void flash_attention_simd_kernel(
         }
         
         // 5. Accumulate P * V (Standard)
-        // P is in Q_shared (16x16). (Correctly scaled).
+        // P is in Q_shared (16x16)
         // V is in V_shared (16x64).
         // Load P tiles
-        simdgroup_float8x8 p_tiles[2][2];
+        simdgroup_half8x8 p_tiles[2][2];
         for(int r=0; r<2; ++r) for(int c=0; c<2; ++c)
             simdgroup_load(p_tiles[r][c], Q_shared, 16, ulong2(c*8, r*8));
             
         // Loop over inner dim D_p=16 (2 tiles)
         for(int k=0; k<2; ++k) {
              // Load V tiles slice k
-             simdgroup_float8x8 v_slices[8]; // row k, cols 0..7
+             simdgroup_half8x8 v_slices[8]; // row k, cols 0..7
              for(int c=0; c<8; ++c) {
                  simdgroup_load(v_slices[c], V_shared, 64, ulong2(c*8, k*8));
              }
@@ -441,13 +430,13 @@ kernel void flash_attention_simd_kernel(
     
     // Apply InvL * Acc -> Output Store
     
-    simdgroup_float8x8 l_tiles[2][2];
+    simdgroup_half8x8 l_tiles[2][2];
     for(int r=0; r<2; ++r) for(int c=0; c<2; ++c)
        simdgroup_load(l_tiles[r][c], K_trans_shared, 16, ulong2(c*8, r*8));
        
     for(int c=0; c<8; ++c) { // For each column block
         for(int r=0; r<2; ++r) { // For each row block
-             simdgroup_float8x8 result(0.0f);
+             simdgroup_half8x8 result(0.0h);
              // Multiply Diag * Tile
              for(int k=0; k<2; ++k) {
                  simdgroup_multiply_accumulate(result, l_tiles[r][k], acc[k][c], result);
@@ -522,16 +511,18 @@ kernel void flash_attention_v2_kernel(
     
     // preload first block
     if (num_blocks_k > 0) {
-        uint row_k = tx;
-        if (row_k < (uint)N) {
-            for (int d = 0; d < D_vec; ++d) {
-                K_tile_A[tx * D_vec + d] = K[row_k * D_vec + d];
-                V_tile_A[tx * D_vec + d] = V[row_k * D_vec + d];
-            }
-        } else {
-            for (int d = 0; d < D_vec; ++d) {
-                K_tile_A[tx * D_vec + d] = float4(0.0f);
-                V_tile_A[tx * D_vec + d] = float4(0.0f);
+        if (tx < (uint)Bc_local) { // Bound check
+            uint row_k = tx;
+            if (row_k < (uint)N) {
+                for (int d = 0; d < D_vec; ++d) {
+                    K_tile_A[tx * D_vec + d] = K[row_k * D_vec + d];
+                    V_tile_A[tx * D_vec + d] = V[row_k * D_vec + d];
+                }
+            } else {
+                for (int d = 0; d < D_vec; ++d) {
+                    K_tile_A[tx * D_vec + d] = float4(0.0f);
+                    V_tile_A[tx * D_vec + d] = float4(0.0f);
+                }
             }
         }
     }
@@ -546,16 +537,18 @@ kernel void flash_attention_v2_kernel(
     for (int j = 0; j < num_blocks_k; ++j) {
         // prefetch next block
         if (j + 1 < num_blocks_k) {
-            uint row_k_next = (j + 1) * Bc_local + tx;
-            if (row_k_next < (uint)N) {
-                for (int d = 0; d < D_vec; ++d) {
-                    K_next[tx * D_vec + d] = K[row_k_next * D_vec + d];
-                    V_next[tx * D_vec + d] = V[row_k_next * D_vec + d];
-                }
-            } else {
-                for (int d = 0; d < D_vec; ++d) {
-                    K_next[tx * D_vec + d] = float4(0.0f);
-                    V_next[tx * D_vec + d] = float4(0.0f);
+            if (tx < (uint)Bc_local) { // Bound check
+                uint row_k_next = (j + 1) * Bc_local + tx;
+                if (row_k_next < (uint)N) {
+                    for (int d = 0; d < D_vec; ++d) {
+                        K_next[tx * D_vec + d] = K[row_k_next * D_vec + d];
+                        V_next[tx * D_vec + d] = V[row_k_next * D_vec + d];
+                    }
+                } else {
+                    for (int d = 0; d < D_vec; ++d) {
+                        K_next[tx * D_vec + d] = float4(0.0f);
+                        V_next[tx * D_vec + d] = float4(0.0f);
+                    }
                 }
             }
         }
@@ -863,7 +856,7 @@ kernel void flash_attention_v4_half_kernel(
     simdgroup_barrier(mem_flags::mem_threadgroup);
     
     if (lane < 16) {
-        K_trans_shared[lane * 16 + lane] = (half)(1.0f / l);
+        K_trans_shared[lane * 16 + lane] = 1.0f / l;
         
         // store l = m + log(l)
         if (g_row + lane < (uint)N) {

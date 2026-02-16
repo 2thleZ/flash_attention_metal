@@ -79,6 +79,24 @@ int main() {
         [device newComputePipelineStateWithFunction:flashFunc error:&error];
     checkError(error);
 
+    id<MTLFunction> flashV2Func =
+        [library newFunctionWithName:@"flash_attention_v2_kernel"];
+    id<MTLComputePipelineState> flashV2PSO =
+        [device newComputePipelineStateWithFunction:flashV2Func error:&error];
+    checkError(error);
+
+    id<MTLFunction> flashV3Func =
+        [library newFunctionWithName:@"flash_attention_simd_kernel"];
+    id<MTLComputePipelineState> flashV3PSO =
+        [device newComputePipelineStateWithFunction:flashV3Func error:&error];
+    checkError(error);
+
+    id<MTLFunction> flashV4Func =
+        [library newFunctionWithName:@"flash_attention_v4_half_kernel"];
+    id<MTLComputePipelineState> flashV4PSO =
+        [device newComputePipelineStateWithFunction:flashV4Func error:&error];
+    checkError(error);
+
     // allocate memory
     size_t matrixSize = N * D * sizeof(float);
     size_t outputSize = N * D * sizeof(float); // Output is also N x D
@@ -99,6 +117,46 @@ int main() {
     initRandom((float *)Q.contents, N * D);
     initRandom((float *)K.contents, N * D);
     initRandom((float *)V.contents, N * D);
+
+    // --- CPU Reference Check (Verify Naive) ---
+    std::cout << "Verifying Naive Kernel against CPU Reference..." << std::endl;
+    std::vector<float> O_cpu(N * D);
+    float *q_ptr = (float *)Q.contents;
+    float *k_ptr = (float *)K.contents;
+    float *v_ptr = (float *)V.contents;
+
+    for (int i = 0; i < N; ++i) {
+      // for each query vector
+      for (int d = 0; d < D; ++d) {
+        float num = 0.0f;
+        float den = 0.0f;
+        float max_score = -INFINITY;
+
+        // 1. Find max score for stability
+        for (int j = 0; j < N; ++j) {
+          float score = 0.0f;
+          for (int k = 0; k < D; ++k) {
+            score += q_ptr[i * D + k] * k_ptr[j * D + k];
+          }
+          score *= SCALE;
+          if (score > max_score)
+            max_score = score;
+        }
+
+        // 2. Compute softmax and weighted sum
+        for (int j = 0; j < N; ++j) {
+          float score = 0.0f;
+          for (int k = 0; k < D; ++k) {
+            score += q_ptr[i * D + k] * k_ptr[j * D + k];
+          }
+          score *= SCALE;
+          float p = exp(score - max_score);
+          num += p * v_ptr[j * D + d];
+          den += p;
+        }
+        O_cpu[i * D + d] = num / den;
+      }
+    }
 
     // dispatch naive
     id<MTLCommandBuffer> commandBuffer = [commandQueue commandBuffer];
@@ -131,6 +189,10 @@ int main() {
 
     [commandBuffer commit];
     [commandBuffer waitUntilCompleted];
+
+    // DEBUG: Print First Element of Naive
+    float *naivePtr = (float *)O_naive.contents;
+    std::cout << "DEBUG: Naive[0] = " << naivePtr[0] << std::endl;
 
     // dispatch flash
     commandBuffer = [commandQueue commandBuffer];
@@ -166,22 +228,231 @@ int main() {
 
     std::cout << "FlashAttention Completed." << std::endl;
 
-    // verify results
-    float *naivePtr = (float *)O_naive.contents;
-    float *flashPtr = (float *)O_flash.contents;
+    // verify naive vs CPU
+    float maxDiffCpu = 0.0f;
+    for (int i = 0; i < N * D; i++) {
+      float diff = std::abs(naivePtr[i] - O_cpu[i]);
+      if (diff > maxDiffCpu)
+        maxDiffCpu = diff;
+    }
+    std::cout << "Naive vs CPU Max Diff: " << maxDiffCpu << std::endl;
+    if (maxDiffCpu < 1e-3)
+      std::cout << "Naive Kernel PASSED" << std::endl;
+    else
+      std::cout << "Naive Kernel FAILED" << std::endl;
 
+    // verify V1 vs Naive
+    float *flashPtr = (float *)O_flash.contents;
     float maxDiff = 0.0f;
     for (int i = 0; i < N * D; i++) {
       float diff = std::abs(naivePtr[i] - flashPtr[i]);
       if (diff > maxDiff)
         maxDiff = diff;
     }
+    std::cout << "V1 vs Naive Max Diff: " << maxDiff << std::endl;
+    if (maxDiff < 1e-3)
+      std::cout << "V1 PASSED" << std::endl;
+    else
+      std::cout << "V1 FAILED" << std::endl;
 
-    std::cout << "Max Difference: " << maxDiff << std::endl;
-    if (maxDiff < 1e-3) {
-      std::cout << "PASSED" << std::endl;
-    } else {
-      std::cout << "FAILED" << std::endl;
+    // --- Verify V2 (Vectorized) ---
+    {
+      memset(O_flash.contents, 0, outputSize);
+      id<MTLCommandBuffer> cmdbuf = [commandQueue commandBuffer];
+      id<MTLComputeCommandEncoder> enc = [cmdbuf computeCommandEncoder];
+      [enc setComputePipelineState:flashV2PSO];
+      [enc setBuffer:Q offset:0 atIndex:0];
+      [enc setBuffer:K offset:0 atIndex:1];
+      [enc setBuffer:V offset:0 atIndex:2];
+      [enc setBuffer:O_flash offset:0 atIndex:3];
+      [enc setBytes:&N length:sizeof(int) atIndex:4];
+      [enc setBytes:&D length:sizeof(int) atIndex:5];
+      [enc setBytes:&SCALE length:sizeof(float) atIndex:6];
+      [enc dispatchThreads:MTLSizeMake(N, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+      [enc endEncoding];
+      [cmdbuf commit];
+      [cmdbuf waitUntilCompleted];
+
+      float maxDiffV2 = 0.0f;
+      for (int i = 0; i < N * D; i++) {
+        float val = flashPtr[i];
+        if (std::isnan(val)) {
+          maxDiffV2 = NAN;
+          break;
+        }
+        float diff = std::abs(naivePtr[i] - val);
+        if (diff > maxDiffV2)
+          maxDiffV2 = diff;
+      }
+      std::cout << "DEBUG: V2[0] = " << flashPtr[0] << std::endl;
+      std::cout << "V2 vs Naive Max Diff: " << maxDiffV2 << std::endl;
+      if (std::isnan(maxDiffV2))
+        std::cout << "V2 FAILED (NaN Detected)" << std::endl;
+      else if (maxDiffV2 < 1e-3)
+        std::cout << "V2 PASSED" << std::endl;
+      else
+        std::cout << "V2 FAILED" << std::endl;
+    }
+
+    // --- Verify V3 (Simdgroup Matrix) ---
+    {
+      // Create Half Buffers
+      size_t halfSize = N * D * sizeof(uint16_t);
+      id<MTLBuffer> Q_h =
+          [device newBufferWithLength:halfSize
+                              options:MTLResourceStorageModeShared];
+      id<MTLBuffer> K_h =
+          [device newBufferWithLength:halfSize
+                              options:MTLResourceStorageModeShared];
+      id<MTLBuffer> V_h =
+          [device newBufferWithLength:halfSize
+                              options:MTLResourceStorageModeShared];
+      id<MTLBuffer> O_h =
+          [device newBufferWithLength:halfSize
+                              options:MTLResourceStorageModeShared];
+
+      // Convert to half
+      uint16_t *qh = (uint16_t *)Q_h.contents;
+      uint16_t *kh = (uint16_t *)K_h.contents;
+      uint16_t *vh = (uint16_t *)V_h.contents;
+      float *q_ptr = (float *)Q.contents;
+      float *k_ptr = (float *)K.contents;
+      float *v_ptr = (float *)V.contents;
+      for (int i = 0; i < N * D; ++i) {
+        __fp16 vq = (__fp16)q_ptr[i];
+        qh[i] = *(uint16_t *)&vq;
+        __fp16 vk = (__fp16)k_ptr[i];
+        kh[i] = *(uint16_t *)&vk;
+        __fp16 vv = (__fp16)v_ptr[i];
+        vh[i] = *(uint16_t *)&vv;
+      }
+
+      memset(O_h.contents, 0, halfSize);
+      id<MTLCommandBuffer> cmdbuf = [commandQueue commandBuffer];
+      id<MTLComputeCommandEncoder> enc = [cmdbuf computeCommandEncoder];
+      [enc setComputePipelineState:flashV3PSO];
+      [enc setBuffer:Q_h offset:0 atIndex:0];
+      [enc setBuffer:K_h offset:0 atIndex:1];
+      [enc setBuffer:V_h offset:0 atIndex:2];
+      [enc setBuffer:O_h offset:0 atIndex:3];
+      [enc setBytes:&N length:sizeof(int) atIndex:4];
+      [enc setBytes:&D length:sizeof(int) atIndex:5];
+      [enc setBytes:&SCALE length:sizeof(float) atIndex:6];
+
+      int Br = 16;
+      int ng = (N + Br - 1) / Br;
+      [enc dispatchThreads:MTLSizeMake(ng * 32, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+      [enc endEncoding];
+      [cmdbuf commit];
+      [cmdbuf waitUntilCompleted];
+
+      float maxDiffV3 = 0.0f;
+      // Copy half output back to float O_flash for comparison
+      uint16_t *oh = (uint16_t *)O_h.contents;
+      for (int i = 0; i < N * D; i++) {
+        __fp16 val = *(__fp16 *)&oh[i];
+        ((float *)O_flash.contents)[i] = (float)val;
+      }
+
+      // verifying V3 vs Naive
+      for (int i = 0; i < N * D; i++) {
+        float val_naive = ((float *)O_naive.contents)[i];
+        float val_flash = ((float *)O_flash.contents)[i];
+        float diff = std::abs(val_naive - val_flash);
+        if (diff > maxDiffV3)
+          maxDiffV3 = diff;
+        if (std::isnan(val_flash)) {
+          maxDiffV3 = NAN;
+          break;
+        }
+      }
+      std::cout << "DEBUG: V3[0] = " << flashPtr[0] << std::endl;
+      std::cout << "V3 vs Naive Max Diff: " << maxDiffV3 << std::endl;
+      if (std::isnan(maxDiffV3))
+        std::cout << "V3 FAILED (NaN Detected)" << std::endl;
+      else if (maxDiffV3 < 5e-3) // Half precision tolerance
+        std::cout << "V3 PASSED" << std::endl;
+      else
+        std::cout << "V3 FAILED (Diff: " << maxDiffV3 << ")" << std::endl;
+    }
+
+    // --- Verify V4 (Half Precision) ---
+    {
+      // Allocate half buffers
+      size_t halfSize = N * D * sizeof(uint16_t);
+      id<MTLBuffer> Q_h =
+          [device newBufferWithLength:halfSize
+                              options:MTLResourceStorageModeShared];
+      id<MTLBuffer> K_h =
+          [device newBufferWithLength:halfSize
+                              options:MTLResourceStorageModeShared];
+      id<MTLBuffer> V_h =
+          [device newBufferWithLength:halfSize
+                              options:MTLResourceStorageModeShared];
+      id<MTLBuffer> O_h =
+          [device newBufferWithLength:halfSize
+                              options:MTLResourceStorageModeShared];
+      id<MTLBuffer> L_h =
+          [device newBufferWithLength:N * sizeof(float)
+                              options:MTLResourceStorageModeShared];
+
+      // Convert input to half
+      uint16_t *qh = (uint16_t *)Q_h.contents;
+      uint16_t *kh = (uint16_t *)K_h.contents;
+      uint16_t *vh = (uint16_t *)V_h.contents;
+      for (int i = 0; i < N * D; ++i) {
+        __fp16 vq = (__fp16)q_ptr[i];
+        qh[i] = *(uint16_t *)&vq;
+        __fp16 vk = (__fp16)k_ptr[i];
+        kh[i] = *(uint16_t *)&vk;
+        __fp16 vv = (__fp16)v_ptr[i];
+        vh[i] = *(uint16_t *)&vv;
+      }
+
+      id<MTLCommandBuffer> cmdbuf = [commandQueue commandBuffer];
+      id<MTLComputeCommandEncoder> enc = [cmdbuf computeCommandEncoder];
+      [enc setComputePipelineState:flashV4PSO];
+      [enc setBuffer:Q_h offset:0 atIndex:0];
+      [enc setBuffer:K_h offset:0 atIndex:1];
+      [enc setBuffer:V_h offset:0 atIndex:2];
+      [enc setBuffer:O_h offset:0 atIndex:3];
+      [enc setBytes:&N length:sizeof(int) atIndex:4];
+      [enc setBytes:&D length:sizeof(int) atIndex:5];
+      [enc setBytes:&SCALE length:sizeof(float) atIndex:6];
+
+      int H = 1;
+      int b_stride = N * D;
+      int h_stride = N * D;
+      [enc setBytes:&b_stride length:sizeof(int) atIndex:7];
+      [enc setBytes:&h_stride length:sizeof(int) atIndex:8];
+      [enc setBuffer:L_h offset:0 atIndex:9];
+      bool causal = false;
+      [enc setBytes:&causal length:sizeof(bool) atIndex:10];
+
+      int Br = 16;
+      int nb = (N + Br - 1) / Br;
+      [enc dispatchThreadgroups:MTLSizeMake(nb, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+      [enc endEncoding];
+      [cmdbuf commit];
+      [cmdbuf waitUntilCompleted];
+
+      // Check result
+      uint16_t *out_h = (uint16_t *)O_h.contents;
+      float maxDiffV4 = 0.0f;
+      for (int i = 0; i < N * D; ++i) {
+        __fp16 val = *(__fp16 *)&out_h[i];
+        float diff = std::abs(naivePtr[i] - (float)val);
+        if (diff > maxDiffV4)
+          maxDiffV4 = diff;
+      }
+      std::cout << "V4 vs Naive Max Diff: " << maxDiffV4 << std::endl;
+      if (maxDiffV4 < 1e-2)
+        std::cout << "V4 PASSED" << std::endl; // loose tol for fp16
+      else
+        std::cout << "V4 FAILED" << std::endl;
     }
 
     // verify causal masking
@@ -322,20 +593,6 @@ int main() {
     else
       std::cout << "CAUSAL FAILED" << std::endl;
 
-    // loading FlashAttention V2 kernel
-    id<MTLFunction> flashV2Func =
-        [library newFunctionWithName:@"flash_attention_v2_kernel"];
-    id<MTLComputePipelineState> flashV2PSO =
-        [device newComputePipelineStateWithFunction:flashV2Func error:&error];
-    checkError(error);
-
-    // loading FlashAttention V3 kernel (Matrix Intrinsics)
-    id<MTLFunction> flashV3Func =
-        [library newFunctionWithName:@"flash_attention_simd_kernel"];
-    id<MTLComputePipelineState> flashV3PSO =
-        [device newComputePipelineStateWithFunction:flashV3Func error:&error];
-    checkError(error);
-
     // benchmark
     std::cout << "\n--- Benchmarking ---\n";
     std::cout << "N,Naive(ms),Flash(ms),FlashV2(ms),FlashV3(ms),FlashV4(ms),"
@@ -349,13 +606,6 @@ int main() {
     }
 
     std::vector<int> sizes = {128, 256, 512, 1024, 2048, 4096, 8192, 16384};
-
-    // loading v4 kernel
-    id<MTLFunction> flashV4Func =
-        [library newFunctionWithName:@"flash_attention_v4_half_kernel"];
-    id<MTLComputePipelineState> flashV4PSO =
-        [device newComputePipelineStateWithFunction:flashV4Func error:&error];
-    checkError(error);
 
     for (int curr_n : sizes) {
       size_t currSize = curr_n * D * sizeof(float);
@@ -385,9 +635,10 @@ int main() {
       id<MTLBuffer> V_half =
           [device newBufferWithLength:currSizeHalf
                               options:MTLResourceStorageModeShared];
-      id<MTLBuffer> O_half =
-          [device newBufferWithLength:currSizeHalf
-                              options:MTLResourceStorageModeShared];
+      // O_half is allocated inside the V3 and V4 blocks now
+      // id<MTLBuffer> O_half =
+      //     [device newBufferWithLength:currSizeHalf
+      //                         options:MTLResourceStorageModeShared];
 
       // l buffer for v4
       size_t size_l_bytes = 1 * 1 * curr_n * sizeof(float);
@@ -511,16 +762,25 @@ int main() {
       double flashV3Time = 0.0;
       {
         // clear output buffer
-        memset(O_curr.contents, 0, currSize);
+        // memset(O_curr.contents, 0, currSize); // O_curr is float, V3 outputs
+        // half
+
+        // Create O_half for V3 output
+        size_t currHalfSize = curr_n * D * sizeof(uint16_t);
+        id<MTLBuffer> O_half_v3 =
+            [device newBufferWithLength:currHalfSize
+                                options:MTLResourceStorageModeShared];
+        memset(O_half_v3.contents, 0, currHalfSize); // Clear half output buffer
+
         auto start = std::chrono::high_resolution_clock::now();
 
         id<MTLCommandBuffer> cmdbuf = [commandQueue commandBuffer];
         id<MTLComputeCommandEncoder> enc = [cmdbuf computeCommandEncoder];
         [enc setComputePipelineState:flashV3PSO];
-        [enc setBuffer:Q_curr offset:0 atIndex:0];
-        [enc setBuffer:K_curr offset:0 atIndex:1];
-        [enc setBuffer:V_curr offset:0 atIndex:2];
-        [enc setBuffer:O_curr offset:0 atIndex:3];
+        [enc setBuffer:Q_half offset:0 atIndex:0]; // Use HALF buffers
+        [enc setBuffer:K_half offset:0 atIndex:1];
+        [enc setBuffer:V_half offset:0 atIndex:2];
+        [enc setBuffer:O_half_v3 offset:0 atIndex:3]; // Output HALF
         [enc setBytes:&curr_n length:sizeof(int) atIndex:4];
         [enc setBytes:&D length:sizeof(int) atIndex:5];
         [enc setBytes:&SCALE length:sizeof(float) atIndex:6];
@@ -544,9 +804,17 @@ int main() {
       double flashV4Time = 0.0;
       {
         // clear output buffers
-        memset(O_half.contents, 0, currSizeHalf);
+        // memset(O_half.contents, 0, currSizeHalf); // O_half is allocated
+        // inside
         memset(L_buf.contents, 0, size_l_bytes);
         auto start = std::chrono::high_resolution_clock::now();
+
+        // Create O_half for V4 output
+        size_t currHalfSize = curr_n * D * sizeof(uint16_t);
+        id<MTLBuffer> O_half_v4 =
+            [device newBufferWithLength:currHalfSize
+                                options:MTLResourceStorageModeShared];
+        memset(O_half_v4.contents, 0, currHalfSize); // Clear half output buffer
 
         id<MTLCommandBuffer> cmdbuf = [commandQueue commandBuffer];
         id<MTLComputeCommandEncoder> enc = [cmdbuf computeCommandEncoder];
@@ -554,7 +822,7 @@ int main() {
         [enc setBuffer:Q_half offset:0 atIndex:0];
         [enc setBuffer:K_half offset:0 atIndex:1];
         [enc setBuffer:V_half offset:0 atIndex:2];
-        [enc setBuffer:O_half offset:0 atIndex:3];
+        [enc setBuffer:O_half_v4 offset:0 atIndex:3]; // Output HALF
         [enc setBytes:&curr_n length:sizeof(int) atIndex:4];
         [enc setBytes:&D length:sizeof(int) atIndex:5];
         [enc setBytes:&SCALE length:sizeof(float) atIndex:6];
