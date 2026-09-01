@@ -5,7 +5,7 @@ CXXFLAGS = -std=c++17 -O3 -fobjc-arc
 LDFLAGS = -framework Metal -framework Foundation -framework CoreGraphics
 
 TARGET = flash_attn
-SRC = main.mm
+SRC = FlashAttention/main.mm
 
 all: $(TARGET)
 

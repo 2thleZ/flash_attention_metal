@@ -36,6 +36,8 @@ int main() {
         [[MTLCaptureDescriptor alloc] init];
     captureDescriptor.captureObject = MTLCreateSystemDefaultDevice();
     captureDescriptor.destination = MTLCaptureDestinationGPUTraceDocument;
+    captureDescriptor.outputURL =
+        [NSURL fileURLWithPath:@"capture_forward.gputrace"];
 
     // setup metal
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
@@ -47,21 +49,34 @@ int main() {
 
     id<MTLCommandQueue> commandQueue = [device newCommandQueue];
 
-    // compile kernels
+    // compile kernels from segregated files
     NSError *error = nil;
-    NSString *libraryFile = @"kernels.metal";
-    NSString *librarySource =
-        [NSString stringWithContentsOfFile:libraryFile
-                                  encoding:NSUTF8StringEncoding
-                                     error:&error];
-    checkError(error);
+    NSArray<NSString *> *kernelFiles = @[
+      @"naive_attn_kernel.metal",
+      @"flash_attn_v1_kernel.metal",
+      @"flash_attn_v2_kernel.metal",
+      @"flash_attn_v3_kernel.metal",
+      @"flash_attn_v4_kernel.metal",
+      @"flash_attn_bw_kernel.metal"
+    ];
 
-    checkError(error);
+    NSMutableString *combinedSource = [NSMutableString string];
+    for (NSString *file in kernelFiles) {
+      NSString *src = [NSString stringWithContentsOfFile:file
+                                                 encoding:NSUTF8StringEncoding
+                                                    error:&error];
+      if (error || !src) {
+        std::cerr << "Failed to read kernel file: " << [file UTF8String] << std::endl;
+        checkError(error);
+      }
+      [combinedSource appendString:src];
+      [combinedSource appendString:@"\n"];
+    }
 
     MTLCompileOptions *options = [[MTLCompileOptions alloc] init];
     options.languageVersion = MTLLanguageVersion3_0;
 
-    id<MTLLibrary> library = [device newLibraryWithSource:librarySource
+    id<MTLLibrary> library = [device newLibraryWithSource:combinedSource
                                                   options:options
                                                     error:&error];
     checkError(error);
@@ -223,8 +238,8 @@ int main() {
     [commandBuffer commit];
     [commandBuffer waitUntilCompleted];
 
-    // Note: To capture a specific kernel, wrap dispatch calls with
-    // MTLCaptureManager start/stop.
+    //  note to self: To capture a specific kernel, wrap dispatch calls with
+    //  MTLCaptureManager start/stop.
 
     std::cout << "FlashAttention Completed." << std::endl;
 
@@ -341,7 +356,7 @@ int main() {
       [enc setBytes:&SCALE length:sizeof(float) atIndex:6];
 
       int Br = 16;
-      int ng = (N + Br - 1) / Br;
+      int ng = (N + Br - 1) / Br; // no. of blocks (N / B_r) (along x direction)
       [enc dispatchThreads:MTLSizeMake(ng * 32, 1, 1)
           threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
       [enc endEncoding];
@@ -422,7 +437,6 @@ int main() {
       [enc setBytes:&D length:sizeof(int) atIndex:5];
       [enc setBytes:&SCALE length:sizeof(float) atIndex:6];
 
-      int H = 1;
       int b_stride = N * D;
       int h_stride = N * D;
       [enc setBytes:&b_stride length:sizeof(int) atIndex:7];
@@ -608,6 +622,21 @@ int main() {
     std::vector<int> sizes = {128, 256, 512, 1024, 2048, 4096, 8192, 16384};
 
     for (int curr_n : sizes) {
+      std::cout << "Benchmarking N = " << curr_n << " (Standard)..."
+                << std::endl;
+      // Start capture for N=1024
+      if (curr_n == 1024) {
+        bool started = [[MTLCaptureManager sharedCaptureManager]
+            startCaptureWithDescriptor:captureDescriptor
+                                 error:&error];
+        if (!started) {
+          std::cerr << "Failed to start capture: " <<
+              [[error localizedDescription] UTF8String] << std::endl;
+        } else {
+          std::cout << "Capture Started for N=1024" << std::endl;
+        }
+      }
+
       size_t currSize = curr_n * D * sizeof(float);
       size_t currSizeHalf =
           curr_n * D * sizeof(uint16_t); // half precision size
@@ -874,18 +903,21 @@ int main() {
                 << flashV2Time << "," << flashV3Time << "," << flashV4Time
                 << "," << speedupV1 << "," << speedupV2 << "," << speedupV3
                 << "," << speedupV4 << "\n";
-        csvFile.flush();
-      }
-    }
 
-    // high occupancy benchmark (b=16, h=8)
+        // STOP CAPTURE for N=1024
+        if (curr_n == 1024) {
+          [[MTLCaptureManager sharedCaptureManager] stopCapture];
+        }
+      }
+    } // End of Standard Benchmark Loop
+
+    // --- High Occupancy Benchmark (B=16, H=8) ---
     std::cout << "\n--- High Occupancy Benchmark (B=16, H=8) ---\n";
     std::cout << "N,FlashV2(ms),FlashV4(ms),Backward(ms),SpeedupV4vsV2"
               << std::endl;
 
     int B = 16;
     int H = 8;
-
     // load backward kernel
     id<MTLFunction> flashBwdFunc =
         [library newFunctionWithName:@"flash_attention_backward_kernel"];
@@ -894,6 +926,15 @@ int main() {
     checkError(error);
 
     for (int curr_n : sizes) {
+      std::cout << "Benchmarking N = " << curr_n << " (High Occupancy)..."
+                << std::endl;
+      // // Start capture for N=1024 (Backward Loop)
+      // if (curr_n == 1024) {
+      //   [[MTLCaptureManager sharedCaptureManager]
+      //       startCaptureWithDescriptor:captureDescriptor
+      //                            error:&error];
+      // }
+
       // Allocate buffers (cap at 1GB)
 
       size_t total_elems = (size_t)B * H * curr_n * D;
@@ -1010,6 +1051,11 @@ int main() {
         auto end = std::chrono::high_resolution_clock::now();
         flashV4Time =
             std::chrono::duration<double, std::milli>(end - start).count();
+
+        // Stop capture after V4 (Forward) for N=1024
+        if (curr_n == 1024) {
+          [[MTLCaptureManager sharedCaptureManager] stopCapture];
+        }
       }
 
       // time backward
@@ -1201,6 +1247,13 @@ int main() {
 
       std::cout << curr_n << ",N/A," << flashV4Time << "," << backwardTime
                 << "," << status << std::endl;
+      std::cout << curr_n << ",N/A," << flashV4Time << "," << backwardTime
+                << "," << status << std::endl;
+
+      // STOP CAPTURE for N=1024
+      // if (curr_n == 1024) {
+      //   [[MTLCaptureManager sharedCaptureManager] stopCapture];
+      // }
     }
     if (csvFile.is_open()) {
       csvFile.close();
